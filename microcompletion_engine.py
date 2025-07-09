@@ -949,16 +949,122 @@ def f_to_for_in_if(state,keystroke):
         return state.delete_before_cursor(len(' if '))
 
 @engine.add_rule
-def backspace_whitespace(state,keystroke):
-    if keystroke=='backspace' and state.leading_whitespace_in_current_line==state.current_line_before_cursor:
-        return state.delete_before_cursor(len(state.leading_whitespace_in_current_line)).delete_before_cursor()
+def enter_breaks_out_of_single_quotes(state,keystroke):
+    """
+    Enter breaks out of single quotes
+    """
+    if keystroke == '\n' and state.char_before_cursor == "'" and state.char_after_cursor == "'":
+        whitespace = state.leading_whitespace_in_current_line
+        return state.cursor_right().insert_text('\n' + whitespace)
+
+@engine.add_rule
+def enter_inserts_enter_in_triple_quotes(state,keystroke):
+    """
+    Enter inserts enter in triple quotes
+    """
+    if keystroke == '\n' and (
+        (state.current_line_before_cursor.endswith("'''") and state.current_line_after_cursor.startswith("'''")) or
+        (state.current_line_before_cursor.endswith('"""') and state.current_line_after_cursor.startswith('"""'))
+    ):
+        return state.insert_text('\n')
+
+@engine.add_rule
+def l_to_lambda(state,keystroke):
+    """
+    l -> lambda
+    """
+    if keystroke == ' ' and state.char_before_cursor == 'l' and not state.current_line_before_cursor.endswith('lambda'):
+        # Check if we're in a function call
+        if '(' in state.current_line_before_cursor and state.current_line_after_cursor.startswith(')'):
+            return state.delete_before_cursor().insert_text('lambda :').cursor_left()
+    elif keystroke == ' ' and state.current_line_before_cursor.endswith('lambda ') and state.char_after_cursor == ':':
+        # We've entered a parameter, now we need the colon
+        return state.cursor_right()
+    elif keystroke == ' ' and state.current_line_before_cursor.endswith(',') and 'lambda ' in state.current_line_before_cursor and state.char_after_cursor == ':':
+        # After typing a parameter
+        return state.cursor_right()
+
+@engine.add_rule
+def nine_to_paren_on_invalid_syntax(state,keystroke):
+    """
+    9 --> ( upon invalid syntax following that 9, and because ( --> () from another rule
+    """
+    if re.fullmatch(r'[A-Za-z_]', keystroke) and state.char_before_cursor == '9' and state.current_line_after_cursor == ')':
+        return state.delete_before_cursor().insert_text('(' + keystroke)
+
+@engine.add_rule
+def three_to_comment(state,keystroke):
+    """
+    3 --> ( upon invalid syntax following that 3, and only if the first non-whitespace of the line, turns into a comment)
+    """
+    if state.char_before_cursor == '3' and not state.current_line_before_cursor.lstrip() and re.fullmatch(r'[A-Za-z_]', keystroke):
+        return state.delete_before_cursor().insert_text('#' + keystroke)
+
+
+@engine.add_rule
+def tab_at_beginning_doesnt_move_cursor(state,keystroke):
+    """
+    Entering tab at the beginning of a line doesn't move the cursor
+    |   ‹¦print()›  tab  ‹¦    print()›
+    """
+    if keystroke == '\t' and state.current_line_before_cursor == '':
+        return state.insert_text('    ')
 
 @engine.add_rule
 def unindent(state,keystroke):
-    if keystroke=='shift_tab':
-        prefix=state.current_line_before_cursor.lstrip()
-        whitespace=state.leading_whitespace_in_current_line
-        return state.delete_before_cursor(len(state.current_line_before_cursor)).insert_text(whitespace[4:]+prefix)
+    """
+    Shift tab should unindent anywhere
+    |   ‹    ¦print()›  shift_tab  ‹¦print()›
+    ...
+    |   ‹¦    print()›  shift_tab  ‹¦print()›
+    ...
+    |   ‹     ¦    print()›  shift_tab  ‹¦    print()›
+    """
+    if keystroke == 'shift_tab':
+        prefix = state.current_line_before_cursor.lstrip()
+        whitespace = state.leading_whitespace_in_current_line
+        new_whitespace = whitespace[4:] if len(whitespace) >= 4 else ''
+        return state.delete_before_cursor(len(state.current_line_before_cursor)).insert_text(new_whitespace + prefix)
+
+@engine.add_rule
+def l_to_lambda(state,keystroke):
+    """
+    l -> lambda
+    |   ‹¦›   p ␣ l   ‹print(l¦)›   ␣   ‹print(lambda ¦:)›   x ␣   ‹print(lambda x,¦:)›   y ␣   ‹print(lambda x,y,¦:)›   ␣   ‹print(lambda x,y:¦)›   z    ‹print(lambda x,y:z¦)›
+    """
+    if keystroke == ' ' and state.char_before_cursor == 'l' and not state.current_line_before_cursor.endswith('lambda'):
+        # Check if we're in a function call
+        if '(' in state.current_line_before_cursor and state.current_line_after_cursor.startswith(')'):
+            return state.delete_before_cursor().insert_text('lambda :').cursor_left()
+    elif keystroke == ' ' and state.current_line_before_cursor.endswith('lambda ') and state.char_after_cursor == ':':
+        # We've entered a parameter, now we need the colon
+        return state.cursor_right()
+    elif keystroke == ' ' and state.current_line_before_cursor.endswith(',') and 'lambda ' in state.current_line_before_cursor and state.char_after_cursor == ':':
+        # After typing a parameter
+        return state.cursor_right()
+
+@engine.add_rule
+def nine_to_paren_on_invalid_syntax(state,keystroke):
+    """
+    9 --> ( upon invalid syntax following that 9, and because ( --> () from another rule
+    |   ‹¦›   p ␣ 9   ‹print(9¦)›   l   ‹print((l¦))›
+    """
+    if re.fullmatch(r'[A-Za-z_]', keystroke) and state.char_before_cursor == '9' and state.current_line_after_cursor == ')':
+        return state.delete_before_cursor().insert_text('(' + keystroke)
+
+@engine.add_rule
+def three_to_comment(state,keystroke):
+    """
+    3 --> ( upon invalid syntax following that 3, and only if the first non-whitespace of the line, turns into a comment)
+    |   ‹    ¦›   3   ‹    3¦›   H e l l o   ‹    #Hello¦›
+    """
+    if state.char_before_cursor == '3' and not state.current_line_before_cursor.lstrip() and re.fullmatch(r'[A-Za-z_]', keystroke):
+        return state.delete_before_cursor().insert_text('#' + keystroke)
+
+@engine.add_rule
+def backspace_whitespace(state,keystroke):
+    if keystroke=='backspace' and state.leading_whitespace_in_current_line==state.current_line_before_cursor:
+        return state.delete_before_cursor(len(state.leading_whitespace_in_current_line)).delete_before_cursor()
 
 
 @engine.add_rule
@@ -1473,31 +1579,50 @@ def _merge_tests(tests):
 
 def run_all_engine_tests(engine):
     print("Running Tests")
+
+    from contextlib import redirect_stdout
+    import io
+
+    # The 'with' statement ensures that stdout is restored even if errors occur
     for i,rule in enumerate(engine.rules):
-        if hasattr(rule,'__doc__') and isinstance(rule.__doc__,str):
-            print()
-            fansi_print("RULE #%i: "%i+ rule.__name__,'magenta','bold')
-            should_fail=False #This the default incase the first group header is "..."
-            for group in _get_groups(rule.__doc__)[::-1]:
-                group_title=group.splitlines()[0].strip()
-                group_body='\n'.join(group.splitlines()[1:])
-                if group_title!=ditto_header: #This means to continue from the previous title
-                    print()
-                if group_body.strip()=='':
-                    fansi_print(indentify(group_title),'blue') #It's a comment
-                    continue
-                fansi_print(indentify(group_title),'yellow','bold')
-                fansi_print(indentify(group_body),'yellow')
-                passed=_test_group(engine,group)
-                if group_title!=ditto_header:
-                    should_fail=group.splitlines()[0].strip().startswith(negation_prefix)
+        should_print = False
+        string_io = io.StringIO()
 
-                if passed:
-                    print('  '+fansi(indentify(('BAD: ' if should_fail else 'GOOD: ') + 'PASSED'),'red' if should_fail else 'green','bold'))
-                else:
-                    print('  '+fansi(indentify(('GOOD: ' if should_fail else 'BAD: ') + 'FAILED'),'green' if should_fail else 'red','bold'))
+        with redirect_stdout(string_io):
+            if hasattr(rule,'__doc__') and isinstance(rule.__doc__,str):
+                print()
+                fansi_print("RULE #%i: "%i+ rule.__name__,'magenta','bold')
+                should_fail=False #This the default incase the first group header is "..."
+                for group in _get_groups(rule.__doc__)[::-1]:
+                    group_title=group.splitlines()[0].strip()
+                    group_body='\n'.join(group.splitlines()[1:])
+                    if group_title!=ditto_header: #This means to continue from the previous title
+                        print()
+                    if group_body.strip()=='':
+                        fansi_print(indentify(group_title),'blue') #It's a comment
+                        continue
+                    passed=_test_group(engine,group)
+                    if group_title!=ditto_header:
+                        should_fail=group.splitlines()[0].strip().startswith(negation_prefix)
+
+                    good = passed and not should_fail or not passed and should_fail
+
+                    if good:
+                        fansi_print(indentify(group_title),'yellow','bold')
+                        fansi_print(indentify(group_body),'yellow')
+
+                    if passed:
+                        print('  '+fansi(indentify(('BAD: ' if should_fail else 'GOOD: ') + 'PASSED'),'red' if should_fail else 'green','bold'))
+                        if should_fail: should_print=True
+                    else:
+                        print('  '+fansi(indentify(('GOOD: ' if should_fail else 'BAD: ') + 'FAILED'),'green' if should_fail else 'red','bold'))
+                        if not should_fail: should_print=True
+
+        if should_print:
+            print(string_io.getvalue())
 
 
+# Don't run tests by default
 engine.run_all_tests()
 
 
@@ -1517,6 +1642,8 @@ def test_engine(engine):
         print(state.debug_view)
 
 print("Start typing code into the terminal, and press q when your're done.")
+
+# Comment this out too to prevent automatic execution
 test_engine(engine)
 
 
