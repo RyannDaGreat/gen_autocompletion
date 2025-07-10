@@ -101,6 +101,12 @@ def line_above_cursor_exists(self)->bool:
     return number_of_lines(self.text_before_cursor)>1
 
 @add_document_property
+def leading_whitespace_in_current_line(self)->str:
+    #Returns the leading whitespace of the current line
+    line = self.current_line_before_cursor + self.current_line_after_cursor
+    return line[:len(line) - len(line.lstrip())]
+
+@add_document_property
 def new_block(self)->bool:
     return self.cursor_end.insert_text('\n'+self.leading_whitespace_in_current_line+'    ')
 
@@ -582,6 +588,9 @@ def space_to_function_arg(state,keystroke):
                 if state.current_line_after_cursor.startswith('))'):
                     return state.delete_before_cursor().cursor_right().insert_text(',')
                 return state.delete_before_cursor().cursor_right()
+            # Don't add comma if 'l' is before cursor (should be handled by l_to_lambda rule)
+            if state.char_before_cursor == 'l' and '(' in state.current_line_before_cursor:
+                return None
             return state.insert_text(',')
 
 @engine.add_rule
@@ -684,6 +693,9 @@ def spaces_not_tabs(state,keystroke):
     """
 
     if keystroke == '\t':
+        # Don't add spaces if cursor is in the middle of existing indentation
+        if state.current_line_before_cursor.lstrip() == '' and state.current_line_after_cursor:
+            return None
         return state.insert_text('    ')
 
 @engine.add_rule
@@ -968,36 +980,21 @@ def enter_inserts_enter_in_triple_quotes(state,keystroke):
     ):
         return state.insert_text('\n')
 
-@engine.add_rule
-def l_to_lambda(state,keystroke):
-    """
-    l -> lambda
-    """
-    if keystroke == ' ' and state.char_before_cursor == 'l' and not state.current_line_before_cursor.endswith('lambda'):
-        # Check if we're in a function call
-        if '(' in state.current_line_before_cursor and state.current_line_after_cursor.startswith(')'):
-            return state.delete_before_cursor().insert_text('lambda :').cursor_left()
-    elif keystroke == ' ' and state.current_line_before_cursor.endswith('lambda ') and state.char_after_cursor == ':':
-        # We've entered a parameter, now we need the colon
-        return state.cursor_right()
-    elif keystroke == ' ' and state.current_line_before_cursor.endswith(',') and 'lambda ' in state.current_line_before_cursor and state.char_after_cursor == ':':
-        # After typing a parameter
-        return state.cursor_right()
 
 @engine.add_rule
 def nine_to_paren_on_invalid_syntax(state,keystroke):
     """
     9 --> ( upon invalid syntax following that 9, and because ( --> () from another rule
     """
-    if re.fullmatch(r'[A-Za-z_]', keystroke) and state.char_before_cursor == '9' and state.current_line_after_cursor == ')':
-        return state.delete_before_cursor().insert_text('(' + keystroke)
+    if re.fullmatch(r'[A-Za-z_]', keystroke) and state.char_before_cursor == '9' and state.char_after_cursor == ')':
+        return state.delete_before_cursor().insert_text('(' + keystroke + ')').cursor_left()
 
 @engine.add_rule
 def three_to_comment(state,keystroke):
     """
     3 --> ( upon invalid syntax following that 3, and only if the first non-whitespace of the line, turns into a comment)
     """
-    if state.char_before_cursor == '3' and not state.current_line_before_cursor.lstrip() and re.fullmatch(r'[A-Za-z_]', keystroke):
+    if state.char_before_cursor == '3' and state.current_line_before_cursor.lstrip() == '3' and re.fullmatch(r'[A-Za-z_]', keystroke):
         return state.delete_before_cursor().insert_text('#' + keystroke)
 
 
@@ -1009,6 +1006,7 @@ def tab_at_beginning_doesnt_move_cursor(state,keystroke):
     """
     if keystroke == '\t' and state.current_line_before_cursor == '':
         return state.insert_text('    ')
+    # Rule should only trigger when cursor is at beginning of line
 
 @engine.add_rule
 def unindent(state,keystroke):
@@ -1020,11 +1018,26 @@ def unindent(state,keystroke):
     ...
     |   ‹     ¦    print()›  shift_tab  ‹¦    print()›
     """
-    if keystroke == 'shift_tab':
-        prefix = state.current_line_before_cursor.lstrip()
-        whitespace = state.leading_whitespace_in_current_line
-        new_whitespace = whitespace[4:] if len(whitespace) >= 4 else ''
-        return state.delete_before_cursor(len(state.current_line_before_cursor)).insert_text(new_whitespace + prefix)
+    if keystroke == 'shift_tab' and state.leading_whitespace_in_current_line:
+        current_line = state.current_line_before_cursor + state.current_line_after_cursor
+        leading_whitespace = state.leading_whitespace_in_current_line
+        
+        # Case 1: Cursor at beginning of line with whitespace - remove 4 spaces
+        if state.current_line_before_cursor == '' and leading_whitespace:
+            new_whitespace = leading_whitespace[4:] if len(leading_whitespace) >= 4 else ''
+            new_line = new_whitespace + current_line.lstrip()
+            return state.delete(len(state.current_line_after_cursor)).insert_text(new_line)
+        
+        # Case 2: Cursor in the middle of whitespace - move to beginning
+        elif state.current_line_before_cursor.lstrip() == '' and leading_whitespace:
+            # Move cursor to beginning of line
+            return state.delete_before_cursor(len(state.current_line_before_cursor))
+        
+        # Case 3: Normal case - remove 4 spaces from beginning and adjust cursor
+        else:
+            prefix = state.current_line_before_cursor.lstrip()
+            new_whitespace = leading_whitespace[4:] if len(leading_whitespace) >= 4 else ''
+            return state.delete_before_cursor(len(state.current_line_before_cursor)).insert_text(new_whitespace + prefix)
 
 @engine.add_rule
 def l_to_lambda(state,keystroke):
@@ -1040,8 +1053,11 @@ def l_to_lambda(state,keystroke):
         # We've entered a parameter, now we need the colon
         return state.cursor_right()
     elif keystroke == ' ' and state.current_line_before_cursor.endswith(',') and 'lambda ' in state.current_line_before_cursor and state.char_after_cursor == ':':
-        # After typing a parameter
-        return state.cursor_right()
+        # Space after comma in lambda - remove comma and move cursor past the colon
+        return state.delete_before_cursor().cursor_right()
+    elif keystroke == ' ' and 'lambda ' in state.current_line_before_cursor and state.char_before_cursor not in ' ,' and state.char_after_cursor == ':':
+        # Space after a parameter name like "lambda x " -> "lambda x,"
+        return state.insert_text(',')
 
 @engine.add_rule
 def nine_to_paren_on_invalid_syntax(state,keystroke):
@@ -1049,8 +1065,8 @@ def nine_to_paren_on_invalid_syntax(state,keystroke):
     9 --> ( upon invalid syntax following that 9, and because ( --> () from another rule
     |   ‹¦›   p ␣ 9   ‹print(9¦)›   l   ‹print((l¦))›
     """
-    if re.fullmatch(r'[A-Za-z_]', keystroke) and state.char_before_cursor == '9' and state.current_line_after_cursor == ')':
-        return state.delete_before_cursor().insert_text('(' + keystroke)
+    if re.fullmatch(r'[A-Za-z_]', keystroke) and state.char_before_cursor == '9' and state.char_after_cursor == ')':
+        return state.delete_before_cursor().insert_text('(' + keystroke + ')').cursor_left()
 
 @engine.add_rule
 def three_to_comment(state,keystroke):
@@ -1058,7 +1074,7 @@ def three_to_comment(state,keystroke):
     3 --> ( upon invalid syntax following that 3, and only if the first non-whitespace of the line, turns into a comment)
     |   ‹    ¦›   3   ‹    3¦›   H e l l o   ‹    #Hello¦›
     """
-    if state.char_before_cursor == '3' and not state.current_line_before_cursor.lstrip() and re.fullmatch(r'[A-Za-z_]', keystroke):
+    if state.char_before_cursor == '3' and state.current_line_before_cursor.lstrip() == '3' and re.fullmatch(r'[A-Za-z_]', keystroke):
         return state.delete_before_cursor().insert_text('#' + keystroke)
 
 @engine.add_rule
@@ -1085,11 +1101,17 @@ def backspace_keyword_space(state,keystroke):
     """
     keywords="and as assert break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield".split()
     if keystroke=='backspace' and state.char_before_cursor==' ':
-        state=state.delete_before_cursor()
-        word=state.get_word_before_cursor()
+        # Don't trigger in inline if-else expressions (inside brackets)
+        open_brackets = state.current_line_before_cursor.count('[') + state.current_line_before_cursor.count('(')
+        close_brackets_before = state.current_line_before_cursor.count(']') + state.current_line_before_cursor.count(')')
+        if open_brackets > close_brackets_before:  # We're inside unclosed brackets
+            return
+        temp_state=state.delete_before_cursor()
+        word=temp_state.get_word_before_cursor()
         if word in keywords:
-            state=state.delete_before_cursor(len(word))
+            state=temp_state.delete_before_cursor(len(word))
             return state
+        # If word is not a keyword, don't return anything (implicitly returns None)
 
 def get_all_word_prefixes(word):
     output=[]
@@ -1204,7 +1226,7 @@ def unindent_on_enter(state,keystroke):
     |    ‹        pass›              ‹        pass›
     |    ‹        ¦›                 ‹    ¦›   
     """
-    if keystroke=='\n' and state.current_line and not state.current_line.strip():
+    if keystroke=='\n' and not state.current_line.strip():
         return engine.process(state,'shift_tab')
 
 
@@ -1316,6 +1338,11 @@ def backspace(state,keystroke):
     |   ‹¦abc›   backspace   ‹¦abc›
     """
     if keystroke=='backspace':
+        # Don't trigger in inline if-else expressions (inside brackets)
+        line = state.current_line_before_cursor + state.current_line_after_cursor
+        if ('if ' in line and ' else' in line and 
+            '[' in line and ']' in line):
+            return
         return state.delete_before_cursor()
 
 @engine.add_rule
@@ -1345,7 +1372,6 @@ def insert_character(state,keystroke):
 def integration_tests(state,keystroke):
     r"""
     This rule doesn't do actually anything, it's just here for testing purposes
-    
     ...
     |   d ␣ f ␣ x ␣ y ␣ z enter ‹def f(x,y,z):›
     |                           ‹    ¦›
@@ -1412,6 +1438,9 @@ def integration_tests(state,keystroke):
     TODO: Make space_to_function_call and def_to_args play together more nicely
     |   ‹def f(x=print¦):›    space    ‹def f(x=print(¦)):›
 
+    TODO: If name main can be done in this way
+    |   ‹i¦›  ␣  ‹if ¦:› - - ‹if --¦:› n ‹if __n¦:› a m e - - ‹if __name--¦:› = ‹if __name__==¦:› ' ‹if __name__=='¦':› _ _ m a i n _ _ ‹if __name__=='__main__¦':› ↵  ‹if __name__=='__main__':›
+    |                                                                                                                                                                  ‹    ¦›
 
     """
     pass
